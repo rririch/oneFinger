@@ -26,6 +26,8 @@ class TradeRecord(BaseModel):
     side: str = Field(..., description="方向")
     commission: float = Field(default=0.0, description="手续费")
     reason: str = Field(default="", description="触发条件")
+    position_ratio: float = Field(default=1.0, description="仓位比例")
+    avg_cost: float = Field(default=0.0, description="入场均价")
 
 
 class BacktestResult(BaseModel):

@@ -69,30 +69,38 @@ class BacktestEngine:
     def _execute_buy(self, bar, signal):
         symbol = signal.symbol
         price = signal.price * (1 + self.slippage)
-        quantity = int(signal.strength * 100) * 100
+
+        max_quantity = int(self.account.cash / price * signal.strength * 0.95)
+        quantity = (max_quantity // 100) * 100
+        quantity = quantity if quantity >= 100 else 0
+
+        if quantity <= 0:
+            return
+
         commission = price * quantity * self.fee_rate
-        
         total_cost = price * quantity + commission
         if self.account.cash >= total_cost:
             self.account.cash -= total_cost
             self.account.total_commission += commission
-            
+
             if symbol not in self.open_trades:
                 self.open_trades[symbol] = {
                     "quantity": 0,
                     "avg_cost": 0,
                     "entries": [],
-                    "reason": signal.reason
+                    "reason": signal.reason,
+                    "position_ratio": signal.strength
                 }
-            
+
             pos = self.open_trades[symbol]
             pos["entries"].append({
                 "price": price,
                 "quantity": quantity,
                 "date": bar.trade_date,
-                "reason": signal.reason
+                "reason": signal.reason,
+                "position_ratio": signal.strength
             })
-            
+
             total_shares = pos["quantity"] + quantity
             total_cost_basis = pos["quantity"] * pos["avg_cost"] + price * quantity
             pos["quantity"] = total_shares
@@ -102,30 +110,44 @@ class BacktestEngine:
         symbol = signal.symbol
         if symbol not in self.open_trades or self.open_trades[symbol]["quantity"] == 0:
             return
-        
+
         pos = self.open_trades[symbol]
-        
+
         price = signal.price * (1 - self.slippage)
-        sell_quantity = min(int(signal.strength * 100) * 100, pos["quantity"])
-        
+        target_quantity = int(pos["quantity"] * signal.strength)
+        sell_quantity = (target_quantity // 100) * 100
+        sell_quantity = min(sell_quantity, pos["quantity"])
+        sell_quantity = sell_quantity if sell_quantity >= 100 else pos["quantity"]
+
+        if sell_quantity <= 0:
+            return
+
         remaining_quantity = sell_quantity
         entry_price_sum = 0
         total_commission = 0
-        
+        position_ratio = signal.strength
+
         for entry in list(pos["entries"]):
             if remaining_quantity <= 0:
                 break
-            
+
             entry_quantity = min(entry["quantity"], remaining_quantity)
             entry_commission = entry["price"] * entry_quantity * self.fee_rate
-            
+
             sell_commission = price * sell_quantity * self.fee_rate
-            
+
             entry_value = entry["price"] * entry_quantity
             sell_value = price * entry_quantity
             pnl = sell_value - entry_value - entry_commission - sell_commission
             pnl_rate = pnl / entry_value if entry_value > 0 else 0
-            
+
+            position_decision = (
+                f"仓位管理: position_ratio={position_ratio:.2f}, "
+                f"目标卖出={int(pos['quantity'] * position_ratio)}股, "
+                f"实际成交={sell_quantity}股(100股整数倍), "
+                f"卖出比例={position_ratio*100:.1f}%"
+            )
+
             self.completed_trades.append(TradeRecord(
                 trade_id=f"t{len(self.completed_trades) + 1}",
                 symbol=symbol,
@@ -138,24 +160,36 @@ class BacktestEngine:
                 pnl_rate=round(pnl_rate, 4),
                 side="long",
                 commission=round(entry_commission + sell_commission, 2),
-                reason=signal.reason or entry.get("reason", "")
+                reason=f"{signal.reason or entry.get('reason', '')} | {position_decision}",
+                position_ratio=position_ratio,
+                avg_cost=entry["price"]
             ))
-            
+
             entry_price_sum += entry["price"] * entry_quantity
             total_commission += entry_commission + sell_commission
             remaining_quantity -= entry_quantity
-            
+
             entry["quantity"] -= entry_quantity
             if entry["quantity"] <= 0:
                 pos["entries"].remove(entry)
-        
+
         commission = price * sell_quantity * self.fee_rate
         self.account.cash += price * sell_quantity - commission
         self.account.total_commission += commission
-        
+
         pos["quantity"] -= sell_quantity
         pos["avg_cost"] = self._calculate_avg_cost(pos)
-    
+
+        position_decision = (
+            f"仓位管理: position_ratio={signal.strength:.2f}, "
+            f"当前持仓={pos['quantity'] + sell_quantity}股, "
+            f"卖出比例={signal.strength*100:.1f}%, "
+            f"实际卖出={sell_quantity}股(取整到100的倍数)"
+        )
+
+        for entry in list(pos["entries"]):
+            entry["position_decision"] = position_decision
+
     def _calculate_avg_cost(self, pos: dict) -> float:
         if pos["quantity"] <= 0:
             return 0
@@ -167,16 +201,22 @@ class BacktestEngine:
             if pos["quantity"] > 0:
                 price = bar.close_price * (1 - self.slippage)
                 remaining = pos["quantity"]
-                
+
+                position_decision = (
+                    f"仓位管理: 回测结束强制平仓, "
+                    f"剩余持仓={remaining}股, "
+                    f"以收盘价{price:.2f}全部卖出"
+                )
+
                 for entry in list(pos["entries"]):
                     entry_commission = entry["price"] * entry["quantity"] * self.fee_rate
                     sell_commission = price * entry["quantity"] * self.fee_rate
-                    
+
                     entry_value = entry["price"] * entry["quantity"]
                     sell_value = price * entry["quantity"]
                     pnl = sell_value - entry_value - entry_commission - sell_commission
                     pnl_rate = pnl / entry_value if entry_value > 0 else 0
-                    
+
                     self.completed_trades.append(TradeRecord(
                         trade_id=f"t{len(self.completed_trades) + 1}",
                         symbol=symbol,
@@ -189,11 +229,13 @@ class BacktestEngine:
                         pnl_rate=round(pnl_rate, 4),
                         side="long",
                         commission=round(entry_commission + sell_commission, 2),
-                        reason="平仓"
+                        reason=position_decision,
+                        position_ratio=1.0,
+                        avg_cost=entry["price"]
                     ))
-                    
+
                     remaining -= entry["quantity"]
-                
+
                 pos["quantity"] = 0
                 pos["entries"] = []
     

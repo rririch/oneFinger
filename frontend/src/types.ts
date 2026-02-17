@@ -5,7 +5,7 @@ export interface OHLCV {
   low: number
   close: number
   volume: number
-  turnover: number
+  turnover?: number
 }
 
 export interface Trade {
@@ -44,6 +44,7 @@ export interface BacktestResult {
     profit_loss_ratio: number
   }
   equity_curve: number[]
+  kline: OHLCV[]
   trades: Trade[]
 }
 

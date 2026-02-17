@@ -77,6 +77,18 @@ async def run_backtest(request: BacktestRequest):
         
         result = engine.run(data, strategy)
         
+        kline_data = [
+            {
+                "date": str(bar.trade_date),
+                "open": bar.open_price,
+                "high": bar.high_price,
+                "low": bar.low_price,
+                "close": bar.close_price,
+                "volume": bar.volume
+            }
+            for bar in data.bars
+        ]
+        
         return BacktestResponse(
             success=True,
             result={
@@ -93,6 +105,7 @@ async def run_backtest(request: BacktestRequest):
                 "max_drawdown": result.max_drawdown,
                 "metrics": result.metrics.model_dump(),
                 "equity_curve": result.equity_curve,
+                "kline": kline_data,
                 "trades": [t.model_dump() for t in result.trades]
             }
         )
